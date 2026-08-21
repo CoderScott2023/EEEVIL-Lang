@@ -1,0 +1,111 @@
+class Tensor {
+  var rows = 0;
+  var cols = 0;
+  var data = alloc(1);
+}
+
+TensorNew(r, c) {
+  var t = new Tensor();
+  t.rows = r;
+  t.cols = c;
+  t.data = alloc(r * c);
+  return t;
+}
+
+TensorGet(t, i, j) {
+  var d = t.data;
+  return d[i * t.cols + j];
+}
+
+TensorSet(t, i, j, v) {
+  var d = t.data;
+  d[i * t.cols + j] = v;
+  return 0;
+}
+
+TensorFill(t, v) {
+  for (var i = 0; i < t.rows; i = i + 1) {
+    for (var j = 0; j < t.cols; j = j + 1) {
+      TensorSet(t, i, j, v);
+    }
+  }
+  return 0;
+}
+
+TensorRand(t) {
+  for (var i = 0; i < t.rows; i = i + 1) {
+    for (var j = 0; j < t.cols; j = j + 1) {
+      TensorSet(t, i, j, rand());
+    }
+  }
+  return 0;
+}
+
+TensorAdd(a, b) {
+  var out = TensorNew(a.rows, a.cols);
+  for (var i = 0; i < a.rows; i = i + 1) {
+    for (var j = 0; j < a.cols; j = j + 1) {
+      TensorSet(out, i, j, TensorGet(a, i, j) + TensorGet(b, i, j));
+    }
+  }
+  return out;
+}
+
+TensorScale(a, k) {
+  var out = TensorNew(a.rows, a.cols);
+  for (var i = 0; i < a.rows; i = i + 1) {
+    for (var j = 0; j < a.cols; j = j + 1) {
+      TensorSet(out, i, j, TensorGet(a, i, j) * k);
+    }
+  }
+  return out;
+}
+
+TensorMatMul(a, b) {
+  var out = TensorNew(a.rows, b.cols);
+  for (var i = 0; i < a.rows; i = i + 1) {
+    for (var j = 0; j < b.cols; j = j + 1) {
+      var sum = 0.0;
+      for (var k = 0; k < a.cols; k = k + 1) {
+        sum = sum + TensorGet(a, i, k) * TensorGet(b, k, j);
+      }
+      TensorSet(out, i, j, sum);
+    }
+  }
+  return out;
+}
+
+TensorRelu(a) {
+  var out = TensorNew(a.rows, a.cols);
+  for (var i = 0; i < a.rows; i = i + 1) {
+    for (var j = 0; j < a.cols; j = j + 1) {
+      var x = TensorGet(a, i, j);
+      if (x < 0.0) {
+        TensorSet(out, i, j, 0.0);
+      } else {
+        TensorSet(out, i, j, x);
+      }
+    }
+  }
+  return out;
+}
+
+TensorSum(a) {
+  var s = 0.0;
+  for (var i = 0; i < a.rows; i = i + 1) {
+    for (var j = 0; j < a.cols; j = j + 1) {
+      s = s + TensorGet(a, i, j);
+    }
+  }
+  return s;
+}
+
+TensorPrint(t) {
+  for (var i = 0; i < t.rows; i = i + 1) {
+    for (var j = 0; j < t.cols; j = j + 1) {
+      print(TensorGet(t, i, j));
+    }
+    print("--");
+  }
+  return 0;
+}
