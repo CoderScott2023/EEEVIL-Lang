@@ -1,0 +1,25 @@
+import "EvilTorchPackage";
+
+Main() {
+  print("eviltorch");
+
+  var a = TensorNew(2, 2);
+  TensorSet(a, 0, 0, 1.0);
+  TensorSet(a, 0, 1, 2.0);
+  TensorSet(a, 1, 0, 3.0);
+  TensorSet(a, 1, 1, 4.0);
+
+  var b = TensorNew(2, 2);
+  TensorFill(b, 2.0);
+
+  print("a matmul b");
+  var c = TensorMatMul(a, b);
+  TensorPrint(c);
+
+  print("sum of c");
+  print(TensorSum(c));
+
+  print("relu of scaled a");
+  var d = TensorRelu(TensorScale(a, 0.0 - 1.0));
+  TensorPrint(d);
+}
