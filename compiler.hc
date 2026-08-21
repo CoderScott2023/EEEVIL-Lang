@@ -729,7 +729,7 @@ class CSym {
 class CFld {
   U8 name[64];
   U8 cls[64];
-  I64 kind;
+  I64 idx;
 };
 
 CSym sym_tab[SYM_MAX];
@@ -769,28 +769,37 @@ U8 *SymClass(U8 *name) {
   return NULL;
 }
 
-U0 FldAdd(U8 *name, U8 *cls, I64 kind) {
+U0 FldAdd(U8 *name, U8 *cls, I64 idx) {
   if (fld_cnt >= FLD_MAX) return;
   StrCpy(fld_tab[fld_cnt].name, name);
   StrCpy(fld_tab[fld_cnt].cls, cls);
-  fld_tab[fld_cnt].kind = kind;
+  fld_tab[fld_cnt].idx = idx;
   fld_cnt++;
 }
 
-U8 *FldClass(U8 *name) {
+I64 FldIndex(U8 *cls, U8 *name) {
   I64 i;
-  for (i = 0; i < fld_cnt; i++) {
-    if (!StrCmp(fld_tab[i].name, name)) return fld_tab[i].cls;
+  if (cls) {
+    for (i = 0; i < fld_cnt; i++) {
+      if (!StrCmp(fld_tab[i].name, name) && !StrCmp(fld_tab[i].cls, cls)) {
+        return fld_tab[i].idx;
+      }
+    }
   }
-  return NULL;
+  for (i = 0; i < fld_cnt; i++) {
+    if (!StrCmp(fld_tab[i].name, name)) return fld_tab[i].idx;
+  }
+  return 0;
 }
 
-I64 FldKind(U8 *name) {
+I64 ClsFieldCnt(U8 *cls) {
   I64 i;
+  I64 n = 0;
   for (i = 0; i < fld_cnt; i++) {
-    if (!StrCmp(fld_tab[i].name, name)) return fld_tab[i].kind;
+    if (!StrCmp(fld_tab[i].cls, cls)) n++;
   }
-  return K_I64;
+  if (n < 1) n = 1;
+  return n;
 }
 
 I64 ExprKind(CASTNode *n) {
@@ -865,24 +874,22 @@ U0 EmitExpr(CASTNode *node, U8 *out) {
   } else if (node->type == AST_FNUM) {
     CatPrint(out, "%s", node->val);
   } else if (node->type == AST_INDEX) {
-    CatPrint(out, "(*(F64 *)((U8 *)(I64)(");
+    CatPrint(out, "EevGet(");
     EmitExpr(node->left, out);
-    CatPrint(out, ") + ((I64)(");
+    CatPrint(out, ", ");
     EmitExpr(node->right, out);
-    CatPrint(out, ")) * 8))");
+    CatPrint(out, ")");
   } else if (node->type == AST_MEMBER) {
     cls = SymClass(node->val);
-    if (!cls) cls = FldClass(node->left->val);
-    if (cls) CatPrint(out, "((%s *)(I64)(%s))->%s", cls, node->val,
-                      node->left->val);
-    else CatPrint(out, "%s->%s", node->val, node->left->val);
+    CatPrint(out, "EevGet(%s, %d)", node->val,
+             FldIndex(cls, node->left->val));
   } else if (node->type == AST_NEW) {
-    CatPrint(out, "(F64)(I64)CAlloc(sizeof(%s))", node->val);
+    CatPrint(out, "EevAlloc(%d)", ClsFieldCnt(node->val));
   } else if (node->type == AST_CALL) {
     if (!StrCmp(node->val, "alloc")) {
-      CatPrint(out, "(F64)(I64)CAlloc(((I64)(");
+      CatPrint(out, "EevAlloc(");
       EmitExpr(node->left, out);
-      CatPrint(out, ")) * 8)");
+      CatPrint(out, ")");
     } else {
       CatPrint(out, "%s(", BuiltinName(node->val));
       arg = node->left;
@@ -941,10 +948,18 @@ U0 EmitStatements(CASTNode *stmt, U8 *out, I64 indent) {
       CatPrint(out, ";\n");
     } else if (stmt->type == AST_SETIDX) {
       EmitIndent(out, indent);
-      EmitExpr(stmt->left, out);
-      CatPrint(out, " = ");
+      CatPrint(out, "EevSet(");
+      if (stmt->left->type == AST_MEMBER) {
+        CatPrint(out, "%s, %d", stmt->left->val,
+                 FldIndex(SymClass(stmt->left->val), stmt->left->left->val));
+      } else {
+        EmitExpr(stmt->left->left, out);
+        CatPrint(out, ", ");
+        EmitExpr(stmt->left->right, out);
+      }
+      CatPrint(out, ", ");
       EmitExpr(stmt->right, out);
-      CatPrint(out, ";\n");
+      CatPrint(out, ");\n");
     } else if (stmt->type == AST_ASSIGN) {
       EmitIndent(out, indent);
       CatPrint(out, "%s = ", stmt->val);
@@ -1011,19 +1026,23 @@ U0 EmitHolyC(CASTNode *ast, U8 *outFilename) {
   CASTNode *cur;
   CASTNode *field;
   CASTNode *p;
-  I64 kind;
+  I64 slot;
 
   CatPrint(out, "// Generated HolyC Code\n\n");
-  if (UsesNet(ast)) CatPrint(out, "#include \"eeevnet.hc\"\n\n");
+  CatPrint(out, "#include \"eeevcore.hc\"\n");
+  if (UsesNet(ast)) CatPrint(out, "#include \"eeevnet.hc\"\n");
+  CatPrint(out, "\n");
 
   fld_cnt = 0;
   cur = ast;
   while (cur) {
     if (cur->type == AST_CLASS) {
+      slot = 0;
       field = cur->body->body;
       while (field) {
         if (field->type == AST_VAR_DECL) {
-          FldAdd(field->val, cur->val, ExprKind(field->left));
+          FldAdd(field->val, cur->val, slot);
+          slot++;
         }
         field = field->next;
       }
@@ -1033,17 +1052,7 @@ U0 EmitHolyC(CASTNode *ast, U8 *outFilename) {
 
   cur = ast;
   while (cur) {
-    if (cur->type == AST_CLASS) {
-      CatPrint(out, "class %s {\n", cur->val);
-      field = cur->body->body;
-      while (field) {
-        if (field->type == AST_VAR_DECL) {
-          CatPrint(out, "  F64 %s;\n", field->val);
-        }
-        field = field->next;
-      }
-      CatPrint(out, "};\n\n");
-    } else if (cur->type == AST_FUNC) {
+    if (cur->type == AST_FUNC) {
       SymReset();
       if (!StrCmp(cur->val, "Main")) {
         CatPrint(out, "U0 Main()\n{\n");
