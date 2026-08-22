@@ -39,6 +39,10 @@
 #define TK_RBRACK   38
 #define TK_FOR      39
 #define TK_IMPORT   40
+#define TK_PLUS_EQ  41 // +=
+#define TK_MINUS_EQ 42 // -=
+#define TK_MUL_EQ   43 // *=
+#define TK_DIV_EQ   44 // /=
 
 #define MAX_VAL    256
 
@@ -115,6 +119,18 @@ U0 NextToken(CLexer *lex) {
   }
   if (c == '|' && lex->src[lex->pos + 1] == '|') {
     lex->cur.type = TK_OR; lex->pos += 2; return;
+  }
+  if (c == '+' && lex->src[lex->pos + 1] == '=') {
+    lex->cur.type = TK_PLUS_EQ; lex->pos += 2; return;
+  }
+  if (c == '-' && lex->src[lex->pos + 1] == '=') {
+    lex->cur.type = TK_MINUS_EQ; lex->pos += 2; return;
+  }
+  if (c == '*' && lex->src[lex->pos + 1] == '=') {
+    lex->cur.type = TK_MUL_EQ; lex->pos += 2; return;
+  }
+  if (c == '/' && lex->src[lex->pos + 1] == '=') {
+    lex->cur.type = TK_DIV_EQ; lex->pos += 2; return;
   }
 
   // Single-character punctuation & operators
@@ -445,8 +461,28 @@ CASTNode *ParseBlock(CLexer *lex) {
   return block;
 }
 
+I64 CompoundOp(I64 tk) {
+  if (tk == TK_PLUS_EQ)  return TK_PLUS;
+  if (tk == TK_MINUS_EQ) return TK_MINUS;
+  if (tk == TK_MUL_EQ)   return TK_MUL;
+  if (tk == TK_DIV_EQ)   return TK_DIV;
+  return 0;
+}
+
+CASTNode *CopyLValue(CASTNode *n) {
+  CASTNode *c;
+  if (!n) return NULL;
+  c = NewNode(n->type);
+  StrCpy(c->val, n->val);
+  c->op = n->op;
+  c->left = CopyLValue(n->left);
+  c->right = CopyLValue(n->right);
+  return c;
+}
+
 CASTNode *ParseStatement(CLexer *lex) {
   CASTNode *stmt = NULL;
+  I64 cop;
   CASTNode *base;
   CASTNode *idxn;
   CASTNode *init;
@@ -546,6 +582,12 @@ CASTNode *ParseStatement(CLexer *lex) {
         stmt = NewNode(AST_SETIDX);
         stmt->left = base;
         stmt->right = ParseExpr(lex);
+      } else if (CompoundOp(lex->cur.type)) {
+        cop = CompoundOp(lex->cur.type);
+        NextToken(lex);
+        stmt = NewNode(AST_SETIDX);
+        stmt->left = base;
+        stmt->right = MakeBinOp(cop, CopyLValue(base), ParseExpr(lex));
       } else {
         stmt = NewNode(AST_EXPRSTMT);
         stmt->left = base;
@@ -558,6 +600,14 @@ CASTNode *ParseStatement(CLexer *lex) {
       stmt = NewNode(AST_ASSIGN);
       StrCpy(stmt->val, name);
       stmt->left = ParseExpr(lex);
+    } else if (CompoundOp(lex->cur.type)) {
+      cop = CompoundOp(lex->cur.type);
+      NextToken(lex);
+      stmt = NewNode(AST_ASSIGN);
+      StrCpy(stmt->val, name);
+      base = NewNode(AST_IDENT);
+      StrCpy(base->val, name);
+      stmt->left = MakeBinOp(cop, base, ParseExpr(lex));
     } else if (lex->cur.type == TK_DOT) {
       NextToken(lex);
       U8 field[64];
@@ -572,6 +622,16 @@ CASTNode *ParseStatement(CLexer *lex) {
         StrCpy(base->left->val, field);
         stmt->left = base;
         stmt->right = ParseExpr(lex);
+      } else if (CompoundOp(lex->cur.type)) {
+        cop = CompoundOp(lex->cur.type);
+        NextToken(lex);
+        stmt = NewNode(AST_SETIDX);
+        base = NewNode(AST_MEMBER);
+        StrCpy(base->val, name);
+        base->left = NewNode(AST_IDENT);
+        StrCpy(base->left->val, field);
+        stmt->left = base;
+        stmt->right = MakeBinOp(cop, CopyLValue(base), ParseExpr(lex));
       }
     }
     if (lex->cur.type == TK_SEMI) NextToken(lex);
