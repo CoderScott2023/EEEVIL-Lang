@@ -284,6 +284,8 @@ CASTNode *ParseCallArgs(CLexer *lex, U8 *name) {
 CASTNode *ParsePrimary(CLexer *lex) {
   CASTNode *node = NULL;
   CASTNode *idxnode;
+  U8 fname[128];
+  U8 mname[200];
 
   if (lex->cur.type == TK_TRUE) {
     node = NewNode(AST_BOOL);
@@ -306,6 +308,11 @@ CASTNode *ParsePrimary(CLexer *lex) {
     NextToken(lex);
     node = NewNode(AST_UNOP);
     node->op = TK_NOT;
+    node->left = ParsePrimary(lex);
+  } else if (lex->cur.type == TK_MINUS) {
+    NextToken(lex);
+    node = NewNode(AST_UNOP);
+    node->op = TK_MINUS;
     node->left = ParsePrimary(lex);
   } else if (lex->cur.type == TK_NUM) {
     node = NewNode(AST_NUM);
@@ -331,11 +338,18 @@ CASTNode *ParsePrimary(CLexer *lex) {
     }
     else if (lex->cur.type == TK_DOT) {
       NextToken(lex);
-      node = NewNode(AST_MEMBER);
-      StrCpy(node->val, name);
-      node->left = NewNode(AST_IDENT);
-      StrCpy(node->left->val, lex->cur.val);
+      StrCpy(fname, lex->cur.val);
       NextToken(lex);
+      if (lex->cur.type == TK_LPAREN) {
+        StrCpy(mname, name);
+        CatPrint(mname, "_%s", fname);
+        node = ParseCallArgs(lex, mname);
+      } else {
+        node = NewNode(AST_MEMBER);
+        StrCpy(node->val, name);
+        node->left = NewNode(AST_IDENT);
+        StrCpy(node->left->val, fname);
+      }
     } 
     else {
       node = NewNode(AST_IDENT);
@@ -482,6 +496,8 @@ CASTNode *CopyLValue(CASTNode *n) {
 
 CASTNode *ParseStatement(CLexer *lex) {
   CASTNode *stmt = NULL;
+  CASTNode *elseblk;
+  U8 callname[200];
   I64 cop;
   CASTNode *base;
   CASTNode *idxn;
@@ -510,7 +526,13 @@ CASTNode *ParseStatement(CLexer *lex) {
     stmt->body = ParseBlock(lex);
     if (lex->cur.type == TK_ELSE) {
       NextToken(lex);
-      stmt->else_block = ParseBlock(lex);
+      if (lex->cur.type == TK_IF) {
+        elseblk = NewNode(AST_BLOCK);
+        elseblk->body = ParseStatement(lex);
+        stmt->else_block = elseblk;
+      } else {
+        stmt->else_block = ParseBlock(lex);
+      }
     }
   }
   else if (lex->cur.type == TK_FOR) {
@@ -613,7 +635,12 @@ CASTNode *ParseStatement(CLexer *lex) {
       U8 field[64];
       StrCpy(field, lex->cur.val);
       NextToken(lex);
-      if (lex->cur.type == TK_ASSIGN) {
+      if (lex->cur.type == TK_LPAREN) {
+        StrCpy(callname, name);
+        CatPrint(callname, "_%s", field);
+        stmt = NewNode(AST_EXPRSTMT);
+        stmt->left = ParseCallArgs(lex, callname);
+      } else if (lex->cur.type == TK_ASSIGN) {
         NextToken(lex);
         stmt = NewNode(AST_SETIDX);
         base = NewNode(AST_MEMBER);
@@ -704,11 +731,76 @@ CASTNode *ParseModule(U8 *name) {
   return head.next;
 }
 
+CASTNode *ParseClassBody(CLexer *lex, U8 *cls) {
+  CASTNode head;
+  CASTNode *cur;
+  CASTNode *m;
+  CASTNode phead;
+  CASTNode *pcur;
+  CASTNode *p;
+  U8 mname[200];
+  I64 before;
+
+  head.next = NULL;
+  cur = &head;
+
+  if (lex->cur.type == TK_LBRACE) NextToken(lex);
+  while (lex->cur.type != TK_RBRACE && lex->cur.type != TK_EOF) {
+    before = lex->pos;
+
+    if (lex->cur.type == TK_VAR) {
+      m = ParseStatement(lex);
+      if (m) {
+        cur->next = m;
+        while (cur->next) cur = cur->next;
+      }
+    } else if (lex->cur.type == TK_IDENT) {
+      StrCpy(mname, cls);
+      CatPrint(mname, "_%s", lex->cur.val);
+      NextToken(lex);
+      if (lex->cur.type == TK_LPAREN) {
+        NextToken(lex);
+        m = NewNode(AST_FUNC);
+        StrCpy(m->val, mname);
+        phead.next = NULL;
+        pcur = &phead;
+        while (lex->cur.type == TK_IDENT) {
+          p = NewNode(AST_IDENT);
+          StrCpy(p->val, lex->cur.val);
+          pcur->next = p;
+          pcur = p;
+          NextToken(lex);
+          if (lex->cur.type == TK_COMMA) NextToken(lex);
+        }
+        if (lex->cur.type == TK_RPAREN) NextToken(lex);
+        m->left = phead.next;
+        m->body = ParseBlock(lex);
+        cur->next = m;
+        cur = m;
+      }
+    } else {
+      NextToken(lex);
+    }
+
+    if (lex->pos == before) NextToken(lex);
+  }
+  if (lex->cur.type == TK_RBRACE) NextToken(lex);
+  return head.next;
+}
+
 CASTNode *ParseTopLevel(CLexer *lex) {
   CASTNode head;
   head.next = NULL;
   CASTNode *cur = &head;
   CASTNode *imported;
+  CASTNode *members;
+  CASTNode *mem;
+  CASTNode *nxt;
+  CASTNode *blk;
+  CASTNode fhead;
+  CASTNode *ftail;
+  CASTNode mhead;
+  CASTNode *mtail;
   U8 modname[128];
 
   while (lex->cur.type != TK_EOF) {
@@ -730,9 +822,35 @@ CASTNode *ParseTopLevel(CLexer *lex) {
       CASTNode *cls = NewNode(AST_CLASS);
       StrCpy(cls->val, lex->cur.val);
       NextToken(lex);
-      cls->body = ParseBlock(lex);
+      members = ParseClassBody(lex, cls->val);
+
+      fhead.next = NULL;
+      ftail = &fhead;
+      mhead.next = NULL;
+      mtail = &mhead;
+      mem = members;
+      while (mem) {
+        nxt = mem->next;
+        mem->next = NULL;
+        if (mem->type == AST_FUNC) {
+          mtail->next = mem;
+          mtail = mem;
+        } else {
+          ftail->next = mem;
+          ftail = mem;
+        }
+        mem = nxt;
+      }
+
+      blk = NewNode(AST_BLOCK);
+      blk->body = fhead.next;
+      cls->body = blk;
       cur->next = cls;
       cur = cls;
+      if (mhead.next) {
+        cur->next = mhead.next;
+        while (cur->next) cur = cur->next;
+      }
     } else if (lex->cur.type == TK_IDENT) {
       // Function declaration: Add(x, y) { ... }
       CASTNode *fn = NewNode(AST_FUNC);
@@ -765,6 +883,7 @@ CASTNode *ParseTopLevel(CLexer *lex) {
 }
 
 extern U0 EmitExpr(CASTNode *node, U8 *out);
+extern U0 EmitIdx(CASTNode *node, U8 *out);
 extern U0 EmitStatements(CASTNode *stmt, U8 *out, I64 indent);
 
 U0 EmitIndent(U8 *out, I64 indent) {
@@ -870,6 +989,10 @@ I64 ExprKind(CASTNode *n) {
   if (n->type == AST_MEMBER) return K_F64;
   if (n->type == AST_IDENT) return SymKind(n->val);
   if (n->type == AST_CALL) return K_F64;
+  if (n->type == AST_UNOP) {
+    if (n->op == TK_MINUS) return ExprKind(n->left);
+    return K_I64;
+  }
   if (n->type == AST_BINOP) {
     if (n->op == TK_EQ || n->op == TK_NE || n->op == TK_LT ||
         n->op == TK_GT || n->op == TK_LTE || n->op == TK_GTE ||
@@ -881,6 +1004,50 @@ I64 ExprKind(CASTNode *n) {
   return K_I64;
 }
 
+#define BASE_MAX 128
+
+class CBase {
+  U8 name[64];
+};
+
+CBase base_tab[BASE_MAX];
+I64 base_cnt = 0;
+
+U0 BaseReset() {
+  base_cnt = 0;
+}
+
+I64 IsBase(U8 *n) {
+  I64 i;
+  for (i = 0; i < base_cnt; i++) {
+    if (!StrCmp(base_tab[i].name, n)) return 1;
+  }
+  return 0;
+}
+
+U0 BaseAdd(U8 *n) {
+  if (base_cnt >= BASE_MAX) return;
+  if (IsBase(n)) return;
+  StrCpy(base_tab[base_cnt].name, n);
+  base_cnt++;
+}
+
+U0 CollectBases(CASTNode *n) {
+  while (n) {
+    if (n->type == AST_MEMBER) BaseAdd(n->val);
+    if (n->type == AST_INDEX) {
+      if (n->left) {
+        if (n->left->type == AST_IDENT) BaseAdd(n->left->val);
+      }
+    }
+    CollectBases(n->left);
+    CollectBases(n->right);
+    CollectBases(n->body);
+    CollectBases(n->else_block);
+    n = n->next;
+  }
+}
+
 U8 *BuiltinName(U8 *name) {
   if (!StrCmp(name, "netopen"))  return "EevNetOpen";
   if (!StrCmp(name, "netsend"))  return "EevNetSend";
@@ -888,6 +1055,7 @@ U8 *BuiltinName(U8 *name) {
   if (!StrCmp(name, "netclose")) return "EevNetClose";
   if (!StrCmp(name, "httpget"))  return "EevHttpGet";
   if (!StrCmp(name, "prints"))   return "EevPrintS";
+  if (!StrCmp(name, "abs"))      return "Abs";
   if (!StrCmp(name, "sqrt"))     return "Sqrt";
   if (!StrCmp(name, "exp"))      return "Exp";
   if (!StrCmp(name, "pow"))      return "Pow";
@@ -915,6 +1083,16 @@ I64 UsesNet(CASTNode *n) {
   return 0;
 }
 
+U0 EmitIdx(CASTNode *node, U8 *out) {
+  if (ExprKind(node) == K_I64) {
+    EmitExpr(node, out);
+  } else {
+    CatPrint(out, "ToI64(");
+    EmitExpr(node, out);
+    CatPrint(out, ")");
+  }
+}
+
 U0 EmitExpr(CASTNode *node, U8 *out) {
   CASTNode *arg;
   U8 *cls;
@@ -927,22 +1105,35 @@ U0 EmitExpr(CASTNode *node, U8 *out) {
   } else if (node->type == AST_INPUT) {
     CatPrint(out, "GetI64(\"> \", 0)");
   } else if (node->type == AST_UNOP) {
-    if (node->op == TK_NOT) CatPrint(out, "!");
+    CatPrint(out, "(");
+    if (node->op == TK_NOT)   CatPrint(out, "!");
+    if (node->op == TK_MINUS) CatPrint(out, "-");
     EmitExpr(node->left, out);
+    CatPrint(out, ")");
   } else if (node->type == AST_NUM || node->type == AST_IDENT) {
     CatPrint(out, "%s", node->val);
   } else if (node->type == AST_FNUM) {
     CatPrint(out, "%s", node->val);
   } else if (node->type == AST_INDEX) {
-    CatPrint(out, "EevGet(");
-    EmitExpr(node->left, out);
-    CatPrint(out, ", ");
-    EmitExpr(node->right, out);
-    CatPrint(out, ")");
+    if (node->left->type == AST_IDENT && IsBase(node->left->val)) {
+      CatPrint(out, "_p_%s[", node->left->val);
+      EmitIdx(node->right, out);
+      CatPrint(out, "]");
+    } else {
+      CatPrint(out, "EevGet(");
+      EmitExpr(node->left, out);
+      CatPrint(out, ", ");
+      EmitExpr(node->right, out);
+      CatPrint(out, ")");
+    }
   } else if (node->type == AST_MEMBER) {
     cls = SymClass(node->val);
-    CatPrint(out, "EevGet(%s, %d)", node->val,
-             FldIndex(cls, node->left->val));
+    if (IsBase(node->val)) {
+      CatPrint(out, "_p_%s[%d]", node->val, FldIndex(cls, node->left->val));
+    } else {
+      CatPrint(out, "EevGet(%s, %d)", node->val,
+               FldIndex(cls, node->left->val));
+    }
   } else if (node->type == AST_NEW) {
     CatPrint(out, "EevAlloc(%d)", ClsFieldCnt(node->val));
   } else if (node->type == AST_CALL) {
@@ -1006,25 +1197,51 @@ U0 EmitStatements(CASTNode *stmt, U8 *out, I64 indent) {
       if (stmt->left) EmitExpr(stmt->left, out);
       else CatPrint(out, "0");
       CatPrint(out, ";\n");
+      if (IsBase(stmt->val)) {
+        EmitIndent(out, indent);
+        CatPrint(out, "_p_%s = ToI64(%s);\n", stmt->val, stmt->val);
+      }
     } else if (stmt->type == AST_SETIDX) {
       EmitIndent(out, indent);
-      CatPrint(out, "EevSet(");
-      if (stmt->left->type == AST_MEMBER) {
-        CatPrint(out, "%s, %d", stmt->left->val,
+      if (stmt->left->type == AST_MEMBER && IsBase(stmt->left->val)) {
+        CatPrint(out, "_p_%s[%d] = ", stmt->left->val,
                  FldIndex(SymClass(stmt->left->val), stmt->left->left->val));
+        EmitExpr(stmt->right, out);
+        CatPrint(out, ";
+");
+      } else if (stmt->left->type == AST_INDEX &&
+                 stmt->left->left->type == AST_IDENT &&
+                 IsBase(stmt->left->left->val)) {
+        CatPrint(out, "_p_%s[", stmt->left->left->val);
+        EmitIdx(stmt->left->right, out);
+        CatPrint(out, "] = ");
+        EmitExpr(stmt->right, out);
+        CatPrint(out, ";
+");
       } else {
-        EmitExpr(stmt->left->left, out);
+        CatPrint(out, "EevSet(");
+        if (stmt->left->type == AST_MEMBER) {
+          CatPrint(out, "%s, %d", stmt->left->val,
+                   FldIndex(SymClass(stmt->left->val), stmt->left->left->val));
+        } else {
+          EmitExpr(stmt->left->left, out);
+          CatPrint(out, ", ");
+          EmitExpr(stmt->left->right, out);
+        }
         CatPrint(out, ", ");
-        EmitExpr(stmt->left->right, out);
+        EmitExpr(stmt->right, out);
+        CatPrint(out, ");
+");
       }
-      CatPrint(out, ", ");
-      EmitExpr(stmt->right, out);
-      CatPrint(out, ");\n");
     } else if (stmt->type == AST_ASSIGN) {
       EmitIndent(out, indent);
       CatPrint(out, "%s = ", stmt->val);
       EmitExpr(stmt->left, out);
       CatPrint(out, ";\n");
+      if (IsBase(stmt->val)) {
+        EmitIndent(out, indent);
+        CatPrint(out, "_p_%s = ToI64(%s);\n", stmt->val, stmt->val);
+      }
     } else if (stmt->type == AST_PRINT) {
       EmitIndent(out, indent);
       if (stmt->left && stmt->left->type == AST_STR) {
@@ -1087,6 +1304,7 @@ U0 EmitHolyC(CASTNode *ast, U8 *outFilename) {
   CASTNode *field;
   CASTNode *p;
   I64 slot;
+  I64 bi;
 
   CatPrint(out, "// Generated HolyC Code\n\n");
   CatPrint(out, "#include \"eeevcore.hc\"\n");
@@ -1114,6 +1332,8 @@ U0 EmitHolyC(CASTNode *ast, U8 *outFilename) {
   while (cur) {
     if (cur->type == AST_FUNC) {
       SymReset();
+      BaseReset();
+      CollectBases(cur->body->body);
       if (!StrCmp(cur->val, "Main")) {
         CatPrint(out, "U0 Main()\n{\n");
       } else {
@@ -1126,6 +1346,16 @@ U0 EmitHolyC(CASTNode *ast, U8 *outFilename) {
           p = p->next;
         }
         CatPrint(out, ")\n{\n");
+      }
+      for (bi = 0; bi < base_cnt; bi++) {
+        CatPrint(out, "  F64 *_p_%s;\n", base_tab[bi].name);
+      }
+      p = cur->left;
+      while (p) {
+        if (IsBase(p->val)) {
+          CatPrint(out, "  _p_%s = ToI64(%s);\n", p->val, p->val);
+        }
+        p = p->next;
       }
       EmitStatements(cur->body->body, out, 1);
       CatPrint(out, "}\n\n");
