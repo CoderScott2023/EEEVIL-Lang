@@ -109,3 +109,30 @@ TensorPrint(t) {
   }
   return 0;
 }
+
+class loss {
+
+    MSE(t, t2) {
+        var x = 0.0;
+        for (var i=0; i < t.rows; i = i+1) {
+            for (var j=0; j<t.cols; j = j+1) {
+                x = x + ((TensorGet(t, i, j)-TensorGet(t2, i, j)) * (TensorGet(t, i, j)-TensorGet(t2, i, j)));
+            }
+        }
+
+        return x/(t.rows * t.cols);
+    }
+
+    RMSE(t, t2) {
+        return sqrt(MSE(t, t2))
+    }
+
+    MAE(t, t2) {
+        for (var i=0; i < t.rows; i = i+1) {
+            for (var j=0; j<t.cols; j = j+1) {
+                x = x + abs(TensorGet(t, i, j)-TensorGet(t2, i, j));
+            }
+        }
+        return x/(t.rows*t.cols);
+    }
+}
